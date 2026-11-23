@@ -32,7 +32,7 @@ HOST = os.environ.get("RELAY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RELAY_PORT", "18999"))
 NORMALIZE = os.environ.get("RELAY_NORMALIZE", "1") not in ("0", "false", "no")
 SIGN = os.environ.get("RELAY_SIGN", "1") not in ("0", "false", "no")
-CLIENT_KEY = os.environ.get("RELAY_CLIENT_KEY", "")  # optional: require this bearer from clients
+CLIENT_AUTH = os.environ.get("RELAY_CLIENT_KEY", "")  # optional: require this bearer from clients
 UPSTREAM_KEY_ENV = os.environ.get("RELAY_UPSTREAM_KEY_ENV", "MISTRAL_API_KEY")
 
 # The marker Mistral's Vibe CLI sends. `call_source` is the field that decides
@@ -204,11 +204,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authorized(self) -> bool:
-        if not CLIENT_KEY:
+        if not CLIENT_AUTH:
             return True
         header = self.headers.get("Authorization") or ""
         token = header[7:].strip() if header.lower().startswith("bearer ") else ""
-        return token == CLIENT_KEY
+        return token == CLIENT_AUTH
 
     def _forward(self, method: str) -> None:
         if not self._authorized():
