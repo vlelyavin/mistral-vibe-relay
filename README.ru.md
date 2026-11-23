@@ -1,0 +1,131 @@
+# mistral-vibe-relay
+
+[README in English](README.md)
+
+У подписки Mistral Vibe есть второй, куда более крупный месячный лимит: `vibe_budget`
+($300/мес на Pro) рядом с обычным `api_budget` ($30/мес). Прямой `api.mistral.ai` тратит
+маленький. Этот релей стоит перед API, подписывает каждый запрос так же, как официальный
+Vibe CLI, и тратит большой - из любого OpenAI-совместимого клиента, без самого CLI и его
+агентского оверхеда.
+
+Заодно он чинит вторую проблему, на которой спотыкаются обычные клиенты: Mistral отвечает
+контентом-блоками (`[{"type":"thinking",…},{"type":"text",…}]`), а не строкой, и отвечает
+`422 extra_forbidden`, если в истории ассистента пришёл `reasoning_content`. Релей
+переводит оба направления.
+
+## Что делает
+
+- добавляет `metadata: {call_source: "vibe_code", …}` в тело каждого `/v1/chat/completions`,
+  поэтому списание идёт из Vibe-бюджета аккаунта, а не из API-бюджета - ровно тот маркер,
+  который шлёт официальный `vibe` CLI
+- вырезает `reasoning_content` / `reasoning` / `thinking` из истории перед отправкой:
+  Mistral отвечает на них `422 extra_forbidden`
+- схлопывает блоки контента в истории в обычный текст, который Mistral принимает всегда
+- переписывает ответ обратно в плоскую форму OpenAI: `content: "…"` плюс
+  `reasoning_content: "…"`, и в стриме, и без стрима
+- сохраняет собственные ключи вызывающего в `metadata`, дозаполняя только биллинговые
+- пропускает без изменений `/v1/models`, `/v1/billing/budget`, `/v1/billing/subscription` и
+  остальные пути, поэтому проверка бюджета работает и через релей
+- один bearer-ключ для клиентов (`RELAY_CLIENT_KEY`), health-эндпоинт и структурный
+  JSON-лог в stderr с тем, что было переписано в каждом запросе
+
+## Чем не является
+
+- не продукт Mistral, никакой связи с компанией
+- не хостинг: работает на вашей машине, с вашим ключом и вашей подпиской
+- не сборка ключей: в репозитории нет ничего приватного
+
+## Прямо о рисках
+
+Маркер - это заявление клиента «я Vibe CLI». Сегодня Mistral списывает такие запросы из
+Vibe Code, и это работает. Если проверка клиента станет строже, лейн отвалится и все
+запросы уйдут в API-бюджет (релей пишет в лог, что переписал, - это будет видно).
+Использовать лимит кодинг-плана для произвольного API-трафика - серая зона в условиях,
+как и любой релей поверх подписки. Решение за вами.
+
+## Требования
+
+- Python 3.11+ (без зависимостей и сборки)
+- ключ Mistral с планом, в котором есть Vibe Code лимит
+  (`GET /v1/billing/budget` покажет `vibe_budget.initial_budget`; `0` - лимита нет)
+
+## Быстрый старт
+
+```bash
+export MISTRAL_API_KEY=...            # ваш ключ, остаётся на вашей машине
+python3 relay.py                      # слушает 127.0.0.1:18999
+curl -s localhost:18999/healthz
+```
+
+Подключайте любой OpenAI-клиент:
+
+```bash
+curl -s localhost:18999/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"mistral-large-4","messages":[{"role":"user","content":"привет"}]}'
+```
+
+Проверить, что платит нужный кошелёк:
+
+```bash
+curl -s localhost:18999/v1/billing/budget -H "Authorization: Bearer anything"
+```
+
+## Конфигурация
+
+Всё через переменные окружения; умолчания безопасны для личной машины.
+
+| переменная | умолчание | смысл |
+|---|---|---|
+| `MISTRAL_API_KEY` | - | ключ апстрима, уходит как `Authorization: Bearer` (имя задаётся `RELAY_UPSTREAM_KEY_ENV`) |
+| `RELAY_UPSTREAM_KEY_ENV` | `MISTRAL_API_KEY` | имя переменной с ключом апстрима |
+| `RELAY_UPSTREAM` | `https://api.mistral.ai` | базовый URL апстрима |
+| `RELAY_HOST` / `RELAY_PORT` | `127.0.0.1` / `18999` | адрес и порт |
+| `RELAY_SIGN` | `1` | добавлять биллинговый `metadata` |
+| `RELAY_NORMALIZE` | `1` | переписывать блоки контента и reasoning |
+| `RELAY_CLIENT_KEY` | пусто | если задан, клиенты обязаны прислать `Authorization: Bearer <значение>` |
+
+## systemd (user unit)
+
+```bash
+./install.sh            # создаёт ~/.config/systemd/user/mistral-vibe-relay.service
+systemctl --user enable --now mistral-vibe-relay
+systemctl --user status mistral-vibe-relay
+```
+
+Юнит читает `~/.config/mistral-vibe-relay/env` (права 600), поэтому ключ не живёт ни в
+юните, ни в истории шелла.
+
+## Как работает переключение кошелька
+
+Перехвачено у официального CLI: каждый его `/v1/chat/completions` несёт
+
+```json
+"metadata": {
+  "call_source": "vibe_code",
+  "call_type": "main_call",
+  "client_name": "vibe_programmatic",
+  "agent_version": "3.1.4",
+  "host_kind": "local"
+}
+```
+
+Замер на одном аккаунте, запросы идентичные (mistral-large-4, 4816 входа + 16 выхода):
+
+| запрос | дельта `api_budget` | дельта `vibe_budget` |
+|---|---|---|
+| с `metadata.call_source=vibe_code` | 0.0% | +0.001135% ($0.0034) |
+| без metadata | +0.04036% ($0.0121) | 0.0% |
+
+Кошелёк переключает именно `metadata`; `User-Agent` не нужен. Полные доказательства,
+включая пробы `422 extra_forbidden` и формы стрима, - в [docs/CONTRACT.md](docs/CONTRACT.md).
+
+## Тесты
+
+```bash
+python3 -m unittest discover -s tests -v    # 17 тестов, без сети
+```
+
+## Лицензия
+
+MIT

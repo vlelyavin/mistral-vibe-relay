@@ -1,0 +1,9 @@
+{
+  "upstream": "https://api.mistral.ai",
+  "host": "127.0.0.1",
+  "port": 18999,
+  "sign": true,
+  "normalize": true,
+  "client_key": "",
+  "upstream_key_env": "MISTRAL_API_KEY"
+}
