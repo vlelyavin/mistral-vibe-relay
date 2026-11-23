@@ -122,6 +122,23 @@ measured on one account with identical requests (mistral-large-4, 4816 input + 1
 including the `422 extra_forbidden` probes and the streaming shapes, is in
 [docs/CONTRACT.md](docs/CONTRACT.md).
 
+## prompt caching
+
+Mistral caches prompt prefixes automatically: no `cache_control` markers, no extra fields.
+The relay does not interfere - the billing `metadata` lives outside the prompt - and it
+forwards `prompt_cache_key` untouched if a client sends one. Measured through the relay on
+a 5745-token prompt repeated three times:
+
+| run | prompt tokens | cached tokens | billed input |
+|---|---|---|---|
+| 1 (cold) | 5745 | 0 | full price |
+| 2 | 5745 | 5632 | 2% of the prompt at full price |
+| 3 | 5745 | 5632 | same |
+
+Cached input is $0.07/M against $0.70/M for `mistral-large-4`, so a stable system prompt
+costs a tenth of what it looks like. Every request is logged with
+`usage: {prompt, completion, cached}`, so a cache miss is visible without a billing page.
+
 ## tests
 
 ```bash

@@ -102,7 +102,22 @@ collapses the latter: text only, always accepted.
 | any other path (`/v1/models`, `/v1/billing/*`, …) | byte-for-byte pass-through |
 | upstream 4xx/5xx | status and body returned to the client unchanged |
 
-## 6. Reproduce
+## 6. Prompt cache works without markers
+
+Mistral caches prompt prefixes on its own; no `cache_control`, no `prompt_cache_key` needed
+(the key is accepted, not required). Through the relay, a 5745-token prompt sent three times
+in a row:
+
+| run | `prompt_tokens` | `prompt_tokens_details.cached_tokens` |
+|---|---|---|
+| 1 | 5745 | 0 |
+| 2 | 5745 | 5632 |
+| 3 | 5745 | 5632 |
+
+The billing `metadata` object does not sit in the prompt, so it cannot break the prefix
+match. Cached input is priced at $0.07/M against $0.70/M for `mistral-large-4`.
+
+## 7. Reproduce
 
 ```bash
 # wallet check before and after

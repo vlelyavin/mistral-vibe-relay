@@ -141,6 +141,19 @@ def normalize_chunk(chunk: dict) -> dict:
     return chunk
 
 
+def usage_summary(payload: dict) -> dict | None:
+    """Token usage for the log, including the prompt-cache hit count."""
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("prompt_tokens_details") or {}
+    return {
+        "prompt": usage.get("prompt_tokens"),
+        "completion": usage.get("completion_tokens"),
+        "cached": details.get("cached_tokens") if isinstance(details, dict) else None,
+    }
+
+
 def shape_request(payload: dict) -> tuple[dict, dict]:
     """Add the billing metadata, clean the history, report what changed."""
     changes: dict[str, Any] = {}
@@ -251,15 +264,21 @@ class Handler(BaseHTTPRequestHandler):
 
         content_type = response.headers.get("Content-Type", "")
         stream = "text/event-stream" in content_type
-        log("proxied", path=self.path, status=response.status, stream=stream, changes=changes)
 
         if not stream:
             body = response.read()
-            if NORMALIZE and payload is not None and is_chat:
+            usage = None
+            if is_chat and payload is not None:
                 try:
-                    body = json.dumps(normalize_response(json.loads(body))).encode()
+                    parsed = json.loads(body)
                 except json.JSONDecodeError:
-                    pass
+                    parsed = None
+                if isinstance(parsed, dict):
+                    usage = usage_summary(parsed)
+                    if NORMALIZE:
+                        body = json.dumps(normalize_response(parsed), ensure_ascii=False).encode()
+            log("proxied", path=self.path, status=response.status, stream=False,
+                changes=changes, usage=usage)
             self.send_response(response.status)
             self.send_header("Content-Type", content_type or "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -274,11 +293,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
+        usage = None
         for line in response:
             out = line
-            if NORMALIZE:
-                chunk = parse_sse_line(line)
-                if chunk is not None:
+            chunk = parse_sse_line(line)
+            if chunk is not None:
+                if chunk.get("usage"):
+                    usage = usage_summary(chunk)
+                if NORMALIZE:
                     out = b"data: " + json.dumps(normalize_chunk(chunk), ensure_ascii=False).encode() + b"\n\n"
             try:
                 self.wfile.write(out)
@@ -286,6 +308,8 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 log("client_disconnected", path=self.path)
                 break
+        log("proxied", path=self.path, status=response.status, stream=True,
+            changes=changes, usage=usage)
 
     # -- routes ----------------------------------------------------------
     def do_POST(self) -> None:  # noqa: N802

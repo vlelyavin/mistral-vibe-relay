@@ -116,6 +116,18 @@ class RequestShapeTest(unittest.TestCase):
         self.assertGreaterEqual(changes["history_fields_stripped"], 2)
 
 
+class UsageTest(unittest.TestCase):
+    def test_cached_tokens_surfaced(self):
+        payload = {"usage": {"prompt_tokens": 5745, "completion_tokens": 3,
+                             "prompt_tokens_details": {"cached_tokens": 5632}}}
+        self.assertEqual(relay.usage_summary(payload),
+                         {"prompt": 5745, "completion": 3, "cached": 5632})
+
+    def test_usage_absent(self):
+        self.assertIsNone(relay.usage_summary({}))
+        self.assertIsNone(relay.usage_summary({"usage": None}))
+
+
 class SseParseTest(unittest.TestCase):
     def test_data_line(self):
         chunk = relay.parse_sse_line(b'data: {"choices": []}\n')
